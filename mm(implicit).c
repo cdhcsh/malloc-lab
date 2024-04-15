@@ -76,9 +76,8 @@ static char *_find_fit(size_t size);
 static void _place(void *p, size_t size);
 
 #ifdef LAZY
-#define GET_COAL(p) (GET(p) & 0x2)
-static void _coalesce_next();
-static void *last_freep;
+static void
+_coalesce_next();
 #endif
 
 static char *heap_listp; /* prologue 를 가리킴*/
@@ -104,19 +103,17 @@ static void *_extend_heap(size_t words)
 }
 
 #ifdef LAZY
-static void _coalesce_next()
+static void _coalesce_next(void *p)
 {
-    void *p = last_freep, *tp;
+    void *tp;
     int size;
-    // if (GET_COAL(HDRP(p)))
-    //     return;
-    while (p != NULL && GET_SIZE(HDRP(p)) > 0)
+    while (GET_SIZE(HDRP(p)) > 0)
     {
         if (!GET_ALLOC(HDRP(p)))
         {
             size = GET_SIZE(HDRP(p));
             tp = NEXT_BLKP(p);
-            while (!GET_ALLOC(HDRP(tp)))
+            while (!GET_ALLOC(tp))
             {
                 size += GET_SIZE(HDRP(tp));
                 tp = NEXT_BLKP(tp);
@@ -130,12 +127,10 @@ static void _coalesce_next()
             p = NEXT_BLKP(p);
         }
     }
-    PUT(HDRP(last_freep), PACK(GET_SIZE(HDRP(last_freep)), 0x2));
 }
 #endif
 
-static void *
-_coalesce(void *p)
+static void *_coalesce(void *p)
 {
     /*
     case 1: 이전과 다음 블록 모두 할당된 상태 -> 통합 종료
@@ -171,9 +166,6 @@ _coalesce(void *p)
         PUT(FTRP(NEXT_BLKP(p)), PACK(size, 0));
         p = PREV_BLKP(p);
     }
-#ifdef LAZY
-    last_freep = p;
-#endif
 #ifdef NEXT_FIT
     next_p = p; // next_fit
 #endif
@@ -206,9 +198,7 @@ static char *_find_fit(size_t size)
             return p;
         }
     }
-#ifdef LAZY
     _coalesce_next();
-#endif
     for (p = heap_listp; p != next_p; p = NEXT_BLKP(p))
     {
         if (!GET_ALLOC(HDRP(p)) && (size <= GET_SIZE(HDRP(p))))
@@ -324,14 +314,12 @@ void mm_free(void *p)
     PUT(HDRP(p), PACK(size, 0)); /* 가용 블록으로 변경 -header의 내용이 아니라 size라서 하위 3비트는 0임 */
     PUT(FTRP(p), PACK(size, 0));
 
-#ifdef LAZY
-    last_freep = p;
-#endif
+#ifndef LAZY
 #ifdef NEXT_FIT
     next_p = _coalesce(p); // next_fit
-#endif
-#ifndef LAZY
+#else
     _coalesce(p);
+#endif
 #endif
 }
 

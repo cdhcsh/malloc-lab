@@ -1,6 +1,8 @@
 {
     "files.associations": {
         "unistd.h": "c",
-        "memlib.h": "c"
+        "memlib.h": "c",
+        "mm.h": "c",
+        "string.h": "c"
     }
 }
