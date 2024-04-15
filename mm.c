@@ -67,19 +67,11 @@ team_t team = {
 #define NEXT_FIT
 // #define BEST_FIT
 
-#define LAZY
-
 /* 함수 프로토타입 선언*/
 static void *_extend_heap(size_t words);
 static void *_coalesce(void *p);
 static char *_find_fit(size_t size);
 static void _place(void *p, size_t size);
-
-#ifdef LAZY
-#define GET_COAL(p) (GET(p) & 0x2)
-static void _coalesce_next();
-static void *last_freep;
-#endif
 
 static char *heap_listp; /* prologue 를 가리킴*/
 
@@ -99,43 +91,10 @@ static void *_extend_heap(size_t words)
     PUT(HDRP(p), PACK(size, 0));         /* Free block header */
     PUT(FTRP(p), PACK(size, 0));         /* Free block footer */
     PUT(HDRP(NEXT_BLKP(p)), PACK(0, 1)); /* New epilogue header -새로운 끝 설정 */
-
     return _coalesce(p);
 }
 
-#ifdef LAZY
-static void _coalesce_next()
-{
-    void *p = last_freep, *tp;
-    int size;
-    // if (GET_COAL(HDRP(p)))
-    //     return;
-    while (p != NULL && GET_SIZE(HDRP(p)) > 0)
-    {
-        if (!GET_ALLOC(HDRP(p)))
-        {
-            size = GET_SIZE(HDRP(p));
-            tp = NEXT_BLKP(p);
-            while (!GET_ALLOC(HDRP(tp)))
-            {
-                size += GET_SIZE(HDRP(tp));
-                tp = NEXT_BLKP(tp);
-            }
-            PUT(HDRP(p), PACK(size, 0));
-            PUT(FTRP(p), PACK(size, 0));
-            p = tp;
-        }
-        else
-        {
-            p = NEXT_BLKP(p);
-        }
-    }
-    PUT(HDRP(last_freep), PACK(GET_SIZE(HDRP(last_freep)), 0x2));
-}
-#endif
-
-static void *
-_coalesce(void *p)
+static void *_coalesce(void *p)
 {
     /*
     case 1: 이전과 다음 블록 모두 할당된 상태 -> 통합 종료
@@ -171,9 +130,6 @@ _coalesce(void *p)
         PUT(FTRP(NEXT_BLKP(p)), PACK(size, 0));
         p = PREV_BLKP(p);
     }
-#ifdef LAZY
-    last_freep = p;
-#endif
 #ifdef NEXT_FIT
     next_p = p; // next_fit
 #endif
@@ -206,9 +162,6 @@ static char *_find_fit(size_t size)
             return p;
         }
     }
-#ifdef LAZY
-    _coalesce_next();
-#endif
     for (p = heap_listp; p != next_p; p = NEXT_BLKP(p))
     {
         if (!GET_ALLOC(HDRP(p)) && (size <= GET_SIZE(HDRP(p))))
@@ -324,33 +277,56 @@ void mm_free(void *p)
     PUT(HDRP(p), PACK(size, 0)); /* 가용 블록으로 변경 -header의 내용이 아니라 size라서 하위 3비트는 0임 */
     PUT(FTRP(p), PACK(size, 0));
 
-#ifdef LAZY
-    last_freep = p;
-#endif
 #ifdef NEXT_FIT
     next_p = _coalesce(p); // next_fit
-#endif
-#ifndef LAZY
-    _coalesce(p);
+#else
 #endif
 }
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *p, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
-
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    if ((int)size < 0)
         return NULL;
-    copySize = GET_SIZE(HDRP(oldptr));
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    else if ((int)size == 0)
+    {
+        mm_free(p);
+        return NULL;
+    }
+    else if (size > 0)
+    {
+        size_t oldsize = GET_SIZE(HDRP(p));
+        size_t newsize = size + 2 * WSIZE;
+        if (newsize <= oldsize)
+        {
+            return p;
+        }
+        /*if newsize is greater than oldsize */
+        else
+        {
+            size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(p)));
+            size_t csize;
+            if (!next_alloc && ((csize = oldsize + GET_SIZE(HDRP(NEXT_BLKP(p))))) >= newsize)
+            {
+                PUT(HDRP(p), PACK(csize, 1));
+                PUT(FTRP(p), PACK(csize, 1));
+#ifdef NEXT_FIT
+                next_p = p;
+#endif
+                return p;
+            }
+            else
+            {
+                void *new_ptr = mm_malloc(newsize);
+                _place(new_ptr, newsize);
+                memcpy(new_ptr, p, newsize);
+                mm_free(p);
+                return new_ptr;
+            }
+        }
+    }
+    else
+        return NULL;
 }
