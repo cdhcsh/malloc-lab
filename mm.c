@@ -75,7 +75,7 @@ team_t team = {
 #define GET_ROOT(class) (*(char **)(seg_listp + (WSIZE * (class))))
 
 /* class에 따른 블록 크기*/
-#define GET_BLACK_SIZE(class) = (1 << (class))
+#define GET_BLOCK_SIZE(class) (1 << (5 + class))
 
 /* 함수 프로토타입 선언*/
 static void *_extend_heap(size_t words);
@@ -153,52 +153,61 @@ static void *_coalesce(void *p)
 static char *_find_fit(size_t size)
 {
     int class = _get_class(size);
-    void *p = GET_ROOT(class);
-    if (p != NULL)
+    void *p;
+    while (class < MAX_SEGREGATED_LIST_SIZE)
     {
+        p = GET_ROOT(class);
+        while (p != NULL)
+        {
+            if (size <= GET_SIZE(HDRP(p)))
+                return p;
+            p = GET_SUCC(p);
+        }
+        class += 1;
     }
-    else
-    {
-    }
+    return NULL;
+
+    // 해당 클래스의 가용 리스트 확인
 }
 
 /* 가용블록 연결 리스트에 p 블록을 제거*/
 static void _remove_free_block(void *p)
 {
-    if (GET_PRED(p))
-        GET_SUCC(GET_PRED(p)) = GET_SUCC(p);
-    else
-        heap_listp = GET_SUCC(p);
-    GET_PRED(GET_SUCC(p)) = GET_PRED(p);
+    int class = _get_class(GET_SIZE(HDRP(p)));
+    if (p == GET_ROOT(class))
+    {
+        GET_ROOT(class) = GET_SUCC(GET_ROOT(class));
+        return;
+    }
+    GET_SUCC(GET_PRED(p)) = GET_SUCC(p);
+    if (GET_SUCC(p) != NULL)
+        GET_PRED(GET_SUCC(p)) = GET_PRED(p);
 }
 
 /* 가용블록 연결 리스트에 p 블록을 추가*/
 static void _add_free_block(void *p)
 {
-    GET_SUCC(p) = heap_listp;
-    GET_PRED(heap_listp) = p;
-    GET_PRED(p) = NULL;
-    heap_listp = p;
+    int class = _get_class(GET_SIZE(HDRP(p)));
+    GET_SUCC(p) = GET_ROOT(class);
+    if (GET_ROOT(class) != NULL)
+        GET_PRED(GET_ROOT(class)) = p;
+    GET_ROOT(class) = p;
 }
 
 /* 가용블럭에 size만큼 할당 */
-static void _place(void *p, size_t size)
+static void _place(void *p, size_t size, int class)
 {
-    size_t c_size = GET_SIZE(HDRP(p)); // 현재 블록의 크기
-
-    _remove_free_block(p); // 가용블록 연결 리스트에서 제거
+    void *p = heap_listp;
+    size = MAX(size, GET_BLOCK_SIZE(_get_class(size)));
+    size_t c_size = GET_SIZE(HDRP(p)); // 가용 공간의 크기
 
     if ((c_size - size) >= (2 * DSIZE))
     { /* 할당 후 남은 공간이 최소 블록 크기 이상이라면 분할함*/
         PUT(HDRP(p), PACK(size, 1));
         PUT(FTRP(p), PACK(size, 1));
-
         p = NEXT_BLKP(p);
-
         PUT(HDRP(p), PACK(c_size - size, 0));
         PUT(FTRP(p), PACK(c_size - size, 0));
-
-        _add_free_block(p); // 남은 블록을 가용블록 연결 리스트에 추가
     }
     else
     {
