@@ -6,9 +6,19 @@ VERSION = 1
 HANDINDIR = /afs/cs.cmu.edu/academic/class/15213-f01/malloclab/handin
 
 CC = gcc
-CFLAGS = -Wall -O2 -m32 -g
+CFLAGS = -Wall -O0 -g #-m32
 
 OBJS = mdriver.o mm.o memlib.o fsecs.o fcyc.o clock.o ftimer.o
+
+test-run : test-build
+	./test
+
+test-build : test-clean test
+
+test: test.o memlib.h mm.h
+
+test-clean :
+	rm -f *~ *.o test
 
 build : clean mdriver
 

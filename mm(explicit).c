@@ -84,7 +84,7 @@ static void _splice_free_block(void *p);
 static void _add_free_block(void *p);
 static void _connect_free_block(void *p, void *cp);
 
-static char *free_listp; /* prologue 를 가리킴*/
+static char *heap_listp; /* prologue 를 가리킴*/
 
 static void *_extend_heap(size_t words)
 {
@@ -162,7 +162,7 @@ static void *_coalesce(void *p)
 
 static char *_find_fit(size_t size)
 {
-    void *p = free_listp;
+    void *p = heap_listp;
     while (p != NULL) // 다음 가용 블럭이 있는 동안 반복
     {
         if ((size <= GET_SIZE(HDRP(p)))) // 적합한 사이즈의 블록을 찾으면 반환
@@ -187,9 +187,9 @@ static void _connect_free_block(void *p, void *cp)
 /* 가용블록 연결 리스트에 p 블록을 제거*/
 static void _splice_free_block(void *p)
 {
-    if (p == free_listp)
+    if (p == heap_listp)
     {
-        free_listp = GET_SUCC(free_listp);
+        heap_listp = GET_SUCC(heap_listp);
         return;
     }
     GET_SUCC(GET_PRED(p)) = GET_SUCC(p);
@@ -201,12 +201,12 @@ static void _splice_free_block(void *p)
 static void _add_free_block(void *p)
 {
 #ifdef LIFO
-    GET_SUCC(p) = free_listp; // 연결리스트의 시작에 연결
-    if (free_listp != NULL)   // 다음 가용 블럭에 연결
+    GET_SUCC(p) = heap_listp; // 연결리스트의 시작에 연결
+    if (heap_listp != NULL)   // 다음 가용 블럭에 연결
     {
-        GET_PRED(free_listp) = p;
+        GET_PRED(heap_listp) = p;
     }
-    free_listp = p;
+    heap_listp = p;
 #endif
 #ifdef ADDR_ORDER
     void *cp = heap_listp;
@@ -280,17 +280,17 @@ static void _place(void *p, size_t size)
  */
 int mm_init(void)
 {
-    if ((free_listp = mem_sbrk(8 * WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(8 * WSIZE)) == (void *)-1)
         return -1;
-    PUT(free_listp, 0);                                /* 정렬 패딩 */
-    PUT(free_listp + (1 * WSIZE), PACK(DSIZE, 1));     /* 프롤로그 header */
-    PUT(free_listp + (2 * WSIZE), PACK(DSIZE, 1));     /* 프롤로그 footer */
-    PUT(free_listp + (3 * WSIZE), PACK(2 * DSIZE, 0)); /* 초기 가용 블록 header */
-    PUT(free_listp + (4 * WSIZE), NULL);               /* 이전 가용 블록 주소*/
-    PUT(free_listp + (5 * WSIZE), NULL);               /* 다음 가용 블록 주소*/
-    PUT(free_listp + (6 * WSIZE), PACK(2 * DSIZE, 0)); /* 초기 가용 블럭 footer */
-    PUT(free_listp + (7 * WSIZE), PACK(0, 1));         /* 에필로그 header */
-    free_listp += (4 * WSIZE);                         /* 초기 가용 블록의 p*/
+    PUT(heap_listp, 0);                                /* 정렬 패딩 */
+    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));     /* 프롤로그 header */
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));     /* 프롤로그 footer */
+    PUT(heap_listp + (3 * WSIZE), PACK(2 * DSIZE, 0)); /* 초기 가용 블록 header */
+    PUT(heap_listp + (4 * WSIZE), NULL);               /* 이전 가용 블록 주소*/
+    PUT(heap_listp + (5 * WSIZE), NULL);               /* 다음 가용 블록 주소*/
+    PUT(heap_listp + (6 * WSIZE), PACK(2 * DSIZE, 0)); /* 초기 가용 블럭 footer */
+    PUT(heap_listp + (7 * WSIZE), PACK(0, 1));         /* 에필로그 header */
+    heap_listp += (4 * WSIZE);                         /* 초기 가용 블록의 p*/
 
     if (_extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
@@ -347,17 +347,42 @@ void mm_free(void *p)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
-
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    if ((int)size < 0)
         return NULL;
-    copySize = GET_SIZE(HDRP(oldptr));
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    else if ((int)size == 0)
+    {
+        mm_free(p);
+        return NULL;
+    }
+    else if (size > 0)
+    {
+        size_t oldsize = GET_SIZE(HDRP(p));
+        size_t newsize = size + 2 * WSIZE;
+        if (newsize <= oldsize)
+        {
+            return p;
+        }
+        else
+        {
+            size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(p)));
+            size_t csize;
+            if (!next_alloc && ((csize = oldsize + GET_SIZE(HDRP(NEXT_BLKP(p))))) >= newsize)
+            {
+                _splice_free_block(p);
+                PUT(HDRP(p), PACK(csize, 1));
+                PUT(FTRP(p), PACK(csize, 1));
+                return p;
+            }
+            else
+            {
+                void *new_ptr = mm_malloc(newsize);
+                _place(new_ptr, newsize);
+                memcpy(new_ptr, p, newsize);
+                mm_free(p);
+                return new_ptr;
+            }
+        }
+    }
+    else
+        return NULL;
 }
