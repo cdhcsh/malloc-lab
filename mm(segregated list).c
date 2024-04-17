@@ -153,25 +153,19 @@ static void *_coalesce(void *p)
 static char *_find_fit(size_t size)
 {
     int class = _get_class(size);
-    void *p, *min_p = NULL;
-    int min_val = 1 << 21;
-
+    void *p;
     while (class < MAX_SEGREGATED_LIST_SIZE)
     {
         p = GET_ROOT(class);
         while (p != NULL)
         {
-            int c_size = GET_SIZE(HDRP(p));
-            if (size <= c_size && min_val > c_size)
-            {
-                min_p = p;
-                min_val = c_size;
-            }
+            if (size <= GET_SIZE(HDRP(p)))
+                return p;
             p = GET_SUCC(p);
         }
         class += 1;
     }
-    return min_p;
+    return NULL;
 
     // 해당 클래스의 가용 리스트 확인
 }
@@ -228,7 +222,7 @@ static void _place(void *p, size_t size)
 int _get_class(size_t size)
 {
     int class = -4;
-    while (size > 0 && class < MAX_SEGREGATED_LIST_SIZE)
+    while (size > 0 && class < 12)
     {
         class += 1;
         size >>= 1;
@@ -282,6 +276,7 @@ void *mm_malloc(size_t size)
     }
 
     /* 맞는 블록이 없으면 힙 영역을 확장하고 요청 블록을 새 가용 블록에 배치 */
+    extendsize = MAX(asize, CHUNKSIZE);
     if ((p = _extend_heap(asize / WSIZE)) == NULL)
         return NULL;
     _place(p, asize);
@@ -295,7 +290,7 @@ void mm_free(void *p)
 {
     size_t size = GET_SIZE(HDRP(p));
 
-    PUT(HDRP(p), PACK(size, 0));
+    PUT(HDRP(p), PACK(size, 0)); /* 가용 블록으로 변경 -header의 내용이 아니라 size라서 하위 3비트는 0임 */
     PUT(FTRP(p), PACK(size, 0));
     _coalesce(p);
 }
@@ -322,34 +317,36 @@ void *mm_realloc(void *p, size_t size)
 
     if (new_size <= old_size)
         return p;
-    if (!prev_alloc && !next_alloc && new_size <= (old_size + next_size + prev_size))
-    {
-        char *pre = PREV_BLKP(p);
-        _remove_free_block(pre);
-        _remove_free_block(NEXT_BLKP(p));
-        memmove(pre, p, old_size);
-        PUT(HDRP(pre), PACK(old_size + next_size + prev_size, 1));
-        PUT(FTRP(pre), PACK(old_size + next_size + prev_size, 1));
-        return pre;
-    }
-    if (!prev_alloc && size + 2 * WSIZE <= old_size + prev_size)
-    {
-        char *pre = PREV_BLKP(p);
-        _remove_free_block(pre);
-        memmove(pre, p, old_size);
-        PUT(HDRP(pre), PACK(old_size + prev_size, 1));
-        PUT(FTRP(pre), PACK(old_size + prev_size, 1));
-        return pre;
-    }
     if (!next_alloc && new_size <= old_size + next_size)
     {
         size_t c_size = old_size + next_size;
 
         _remove_free_block(NEXT_BLKP(p));
+        if (c_size - new_size >= 4 * WSIZE)
+        {
+
+            PUT(HDRP(p), PACK(new_size, 1));
+            PUT(FTRP(p), PACK(new_size, 1));
+
+            PUT(HDRP(NEXT_BLKP(p)), PACK((c_size - new_size), 0));
+            PUT(FTRP(NEXT_BLKP(p)), PACK((c_size - new_size), 0));
+
+            _add_free_block(NEXT_BLKP(p));
+            return p;
+        }
         PUT(HDRP(p), PACK(c_size, 1));
         PUT(FTRP(p), PACK(c_size, 1));
         return p;
     }
+    // if (!prev_alloc && size + 2 * WSIZE <= old_size + prev_size)
+    // {
+    //     char *pre = PREV_BLKP(p);
+    //     _remove_free_block(pre);
+    //     memmove(pre, p, old_size);
+    //     PUT(HDRP(pre), PACK(old_size + prev_size, 1));
+    //     PUT(FTRP(pre), PACK(old_size + prev_size, 1));
+    //     return pre;
+    // }
 
     void *newptr = mm_malloc(size);
     if (newptr == NULL)
