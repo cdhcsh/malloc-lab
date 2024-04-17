@@ -64,9 +64,18 @@ team_t team = {
 #define PREV_BLKP(p) ((char *)(p)-GET_SIZE(((char *)(p)-DSIZE)))
 
 /* 다음 가용 블록의 주소*/
-#define GET_SUCC(p) (*(void **)((char *)(p) + WSIZE))
+#define GET_SUCC(p) (*(char **)(p + WSIZE))
 /* 이전 가용 블록의 주소*/
-#define GET_PRED(p) (*(void **)(p))
+#define GET_PRED(p) (*(char **)(p))
+
+/* 분리된 가용리스트 수 */
+#define MAX_SEGREGATED_LIST_SIZE 12
+
+/* class에 따른 루트 주소 */
+#define GET_ROOT(class) (*(char **)(seg_listp + (WSIZE * (class))))
+
+/* class에 따른 블록 크기*/
+#define GET_BLOCK_SIZE(class) (1 << (5 + class))
 
 /* 함수 프로토타입 선언*/
 static void *_extend_heap(size_t words);
@@ -75,8 +84,10 @@ static char *_find_fit(size_t size);
 static void _place(void *p, size_t size);
 static void _remove_free_block(void *p);
 static void _add_free_block(void *p);
+static int _get_class(size_t size);
 
 static char *heap_listp; /* prologue 를 가리킴*/
+static char *seg_listp;
 
 static void *_extend_heap(size_t words)
 {
@@ -84,6 +95,10 @@ static void *_extend_heap(size_t words)
     size_t size;
 
     size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+
+    if (size < 2 * DSIZE)
+        size = 2 * DSIZE;
+
     if ((long)(p = mem_sbrk(size)) == -1) //
         return NULL;
 
@@ -103,16 +118,11 @@ static void *_coalesce(void *p)
     case 4: 이전과 다음 블록 모두 가용상태 -> 이전,현재,다음 블록을 연결
     */
 
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(p))) || (PREV_BLKP(p) == p);
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(p)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(p)));
     size_t size = GET_SIZE(HDRP(p));
 
-    if (prev_alloc && next_alloc)
-    { // case 1
-        _add_free_block(p);
-        return p;
-    }
-    else if (prev_alloc && !next_alloc)
+    if (prev_alloc && !next_alloc)
     { // case 2
         _remove_free_block(NEXT_BLKP(p));
         size += GET_SIZE(HDRP(NEXT_BLKP(p)));
@@ -121,17 +131,17 @@ static void *_coalesce(void *p)
     }
     else if (!prev_alloc && next_alloc)
     { // case 3
-        size += GET_SIZE(HDRP(PREV_BLKP(p)));
         _remove_free_block(PREV_BLKP(p));
         p = PREV_BLKP(p);
+        size += GET_SIZE(HDRP(p));
         PUT(HDRP(p), PACK(size, 0));
         PUT(FTRP(p), PACK(size, 0));
     }
-    else
+    else if (!prev_alloc && !next_alloc)
     { // case 4
-        size += GET_SIZE(FTRP(NEXT_BLKP(p))) + GET_SIZE(HDRP(PREV_BLKP(p)));
-        _remove_free_block(NEXT_BLKP(p));
         _remove_free_block(PREV_BLKP(p));
+        _remove_free_block(NEXT_BLKP(p));
+        size += GET_SIZE(HDRP(NEXT_BLKP(p))) + GET_SIZE(HDRP(PREV_BLKP(p)));
         p = PREV_BLKP(p);
         PUT(HDRP(p), PACK(size, 0));
         PUT(FTRP(p), PACK(size, 0));
@@ -142,41 +152,52 @@ static void *_coalesce(void *p)
 
 static char *_find_fit(size_t size)
 {
-    void *p;
-    void *best_fit = NULL;
-    size_t min_remaining = 1 << 21;
+    int class = _get_class(size);
+    void *p, *min_p = NULL;
+    int min_val = 1 << 21;
 
-    for (p = heap_listp; GET_ALLOC(HDRP(p)) == 0; p = GET_SUCC(p))
+    while (class < MAX_SEGREGATED_LIST_SIZE)
     {
-        if (size <= (size_t)GET_SIZE(HDRP(p)))
+        p = GET_ROOT(class);
+        while (p != NULL)
         {
-            size_t remaining = (size_t)GET_SIZE(HDRP(p)) - size;
-            if (remaining < min_remaining)
+            int c_size = GET_SIZE(HDRP(p));
+            if (size <= c_size && min_val > c_size)
             {
-                min_remaining = remaining;
-                best_fit = p;
+                min_p = p;
+                min_val = c_size;
             }
+            p = GET_SUCC(p);
         }
+        class += 1;
     }
-    return best_fit;
+    return min_p;
+
+    // 해당 클래스의 가용 리스트 확인
 }
+
 /* 가용블록 연결 리스트에 p 블록을 제거*/
 static void _remove_free_block(void *p)
 {
-    if (GET_PRED(p) != NULL)
-        GET_SUCC(GET_PRED(p)) = GET_SUCC(p);
-    else
-        heap_listp = GET_SUCC(p);
-    GET_PRED(GET_SUCC(p)) = GET_PRED(p);
+    int class = _get_class(GET_SIZE(HDRP(p)));
+    if (p == GET_ROOT(class))
+    {
+        GET_ROOT(class) = GET_SUCC(GET_ROOT(class));
+        return;
+    }
+    GET_SUCC(GET_PRED(p)) = GET_SUCC(p);
+    if (GET_SUCC(p) != NULL)
+        GET_PRED(GET_SUCC(p)) = GET_PRED(p);
 }
 
 /* 가용블록 연결 리스트에 p 블록을 추가*/
 static void _add_free_block(void *p)
 {
-    GET_SUCC(p) = heap_listp;
-    GET_PRED(heap_listp) = p;
-    GET_PRED(p) = NULL;
-    heap_listp = p;
+    int class = _get_class(GET_SIZE(HDRP(p)));
+    GET_SUCC(p) = GET_ROOT(class);
+    if (GET_ROOT(class) != NULL)
+        GET_PRED(GET_ROOT(class)) = p;
+    GET_ROOT(class) = p;
 }
 
 /* 가용블럭에 size만큼 할당 */
@@ -195,7 +216,8 @@ static void _place(void *p, size_t size)
 
         PUT(HDRP(p), PACK(c_size - size, 0));
         PUT(FTRP(p), PACK(c_size - size, 0));
-        _coalesce(p);
+
+        _add_free_block(p); // 남은 블록을 가용블록 연결 리스트에 추가
     }
     else
     {
@@ -203,22 +225,34 @@ static void _place(void *p, size_t size)
         PUT(FTRP(p), PACK(c_size, 1));
     }
 }
-
+int _get_class(size_t size)
+{
+    int class = -4;
+    while (size > 0 && class < MAX_SEGREGATED_LIST_SIZE)
+    {
+        class += 1;
+        size >>= 1;
+    }
+    if (class > (MAX_SEGREGATED_LIST_SIZE - 1))
+        class = MAX_SEGREGATED_LIST_SIZE - 1;
+    return MAX(class - 1, 0);
+}
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    if ((heap_listp = mem_sbrk(8 * WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk((MAX_SEGREGATED_LIST_SIZE + 4) * WSIZE)) == (void *)-1)
         return -1;
-    PUT(heap_listp, 0);                            /* 정렬 패딩 */
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1)); /* 프롤로그 header */
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1)); /* 프롤로그 footer */
-    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));     /* 에필로그 header */
-    heap_listp += (2 * WSIZE);                     /* 초기 가용 블록의 p*/
-
-    if (_extend_heap(4) == NULL)
-        return -1;
+    size_t size = (MAX_SEGREGATED_LIST_SIZE + 2) * WSIZE;
+    PUT(heap_listp, 0);                           /* 정렬 패딩 */
+    PUT(heap_listp + (1 * WSIZE), PACK(size, 1)); /* 프롤로그 header */
+    for (int i = 0; i < MAX_SEGREGATED_LIST_SIZE; i++)
+        PUT(heap_listp + ((i + 2) * WSIZE), NULL);
+    PUT(heap_listp + ((MAX_SEGREGATED_LIST_SIZE + 2) * WSIZE), PACK(size, 1)); /* 프롤로그 footer */
+    PUT(heap_listp + ((MAX_SEGREGATED_LIST_SIZE + 3) * WSIZE), PACK(0, 1));    /* 에필로그 header */
+    heap_listp += (2 * WSIZE);                                                 /* 초기 가용 블록의 p*/
+    seg_listp = heap_listp;
 
     return 0;
 }
@@ -237,19 +271,18 @@ void *mm_malloc(size_t size)
         return NULL;
 
     if (size <= DSIZE)
-        asize = 2 * DSIZE; /* size는 실제로 사용할 데이터 영역의 크기만 지정 -> 헤더, 풋터 포함하려고 더블워드 2배*/
+        asize = 2 * DSIZE; /*헤더, 풋터 포함하려고 더블워드 2배*/
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
     if ((p = _find_fit(asize)) != NULL)
     {
-        _place(p, asize); /* 요청 블록 배치 */
+        _place(p, asize);
         return p;
     }
 
     /* 맞는 블록이 없으면 힙 영역을 확장하고 요청 블록을 새 가용 블록에 배치 */
-    extendsize = MAX(asize, CHUNKSIZE);
-    if ((p = _extend_heap(extendsize / WSIZE)) == NULL)
+    if ((p = _extend_heap(asize / WSIZE)) == NULL)
         return NULL;
     _place(p, asize);
     return p;
@@ -286,33 +319,33 @@ void *mm_realloc(void *p, size_t size)
     size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(p)));
     size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(p)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(p)));
-    size_t c_size;
 
     if (new_size <= old_size)
         return p;
-    if (!prev_alloc && !next_alloc && new_size <= (c_size = old_size + next_size + prev_size))
+    if (!prev_alloc && !next_alloc && new_size <= (old_size + next_size + prev_size))
     {
         char *pre = PREV_BLKP(p);
         _remove_free_block(pre);
         _remove_free_block(NEXT_BLKP(p));
         memmove(pre, p, old_size);
-        PUT(HDRP(pre), PACK(c_size, 1));
-        PUT(FTRP(pre), PACK(c_size, 1));
+        PUT(HDRP(pre), PACK(old_size + next_size + prev_size, 1));
+        PUT(FTRP(pre), PACK(old_size + next_size + prev_size, 1));
         return pre;
     }
-    if (!prev_alloc && new_size <= (c_size = old_size + prev_size))
+    if (!prev_alloc && size + 2 * WSIZE <= old_size + prev_size)
     {
         char *pre = PREV_BLKP(p);
         _remove_free_block(pre);
         memmove(pre, p, old_size);
-        PUT(HDRP(pre), PACK(c_size, 1));
-        PUT(FTRP(pre), PACK(c_size, 1));
+        PUT(HDRP(pre), PACK(old_size + prev_size, 1));
+        PUT(FTRP(pre), PACK(old_size + prev_size, 1));
         return pre;
     }
-    if (!next_alloc && new_size <= (c_size = old_size + next_size))
+    if (!next_alloc && new_size <= old_size + next_size)
     {
-        _remove_free_block(NEXT_BLKP(p));
+        size_t c_size = old_size + next_size;
 
+        _remove_free_block(NEXT_BLKP(p));
         PUT(HDRP(p), PACK(c_size, 1));
         PUT(FTRP(p), PACK(c_size, 1));
         return p;
