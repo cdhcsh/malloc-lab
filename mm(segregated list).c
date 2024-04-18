@@ -37,7 +37,7 @@ team_t team = {
 /* 기본 사이즈 지정*/
 #define WSIZE 4             /* 워드와 header,footer 사이즈 (bytes)*/
 #define DSIZE 8             /* double word (bytes) */
-#define CHUNKSIZE (1 << 12) /* 확장될 힙의 크기 (bytes)*/
+#define CHUNKSIZE (1 << 10) /* 확장될 힙의 크기 (bytes)*/
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
@@ -85,10 +85,12 @@ static void _place(void *p, size_t size);
 static void _remove_free_block(void *p);
 static void _add_free_block(void *p);
 static int _get_class(size_t size);
+static int _get_block_size(size_t size);
 
 static char *heap_listp; /* prologue 를 가리킴*/
 static char *seg_listp;
 
+/* 힙 확장*/
 static void *_extend_heap(size_t words)
 {
     char *p;
@@ -109,6 +111,7 @@ static void *_extend_heap(size_t words)
     return _coalesce(p);
 }
 
+/* 블럭 할당 해제 및 병합 */
 static void *_coalesce(void *p)
 {
     /*
@@ -150,6 +153,7 @@ static void *_coalesce(void *p)
     return p;
 }
 
+/* 가용블럭 탐색 */
 static char *_find_fit(size_t size)
 {
     int class = _get_class(size);
@@ -166,8 +170,6 @@ static char *_find_fit(size_t size)
         class += 1;
     }
     return NULL;
-
-    // 해당 클래스의 가용 리스트 확인
 }
 
 /* 가용블록 연결 리스트에 p 블록을 제거*/
@@ -219,6 +221,7 @@ static void _place(void *p, size_t size)
         PUT(FTRP(p), PACK(c_size, 1));
     }
 }
+
 int _get_class(size_t size)
 {
     int class = -4;
@@ -230,6 +233,15 @@ int _get_class(size_t size)
     if (class > (MAX_SEGREGATED_LIST_SIZE - 1))
         class = MAX_SEGREGATED_LIST_SIZE - 1;
     return MAX(class - 1, 0);
+}
+int _get_block_size(size_t size)
+{
+    int b_size = 1;
+    while (b_size < size)
+    {
+        b_size *= 2;
+    }
+    return b_size;
 }
 /*
  * mm_init - initialize the malloc package.
@@ -250,7 +262,6 @@ int mm_init(void)
 
     return 0;
 }
-
 /*
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
@@ -264,6 +275,10 @@ void *mm_malloc(size_t size)
     if (size == 0)
         return NULL;
 
+    if (size <= CHUNKSIZE)
+    {
+        size = _get_block_size(size);
+    }
     if (size <= DSIZE)
         asize = 2 * DSIZE; /*헤더, 풋터 포함하려고 더블워드 2배*/
     else
@@ -290,7 +305,7 @@ void mm_free(void *p)
 {
     size_t size = GET_SIZE(HDRP(p));
 
-    PUT(HDRP(p), PACK(size, 0)); /* 가용 블록으로 변경 -header의 내용이 아니라 size라서 하위 3비트는 0임 */
+    PUT(HDRP(p), PACK(size, 0));
     PUT(FTRP(p), PACK(size, 0));
     _coalesce(p);
 }
@@ -314,39 +329,27 @@ void *mm_realloc(void *p, size_t size)
     size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(p)));
     size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(p)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(p)));
+    size_t c_size;
 
     if (new_size <= old_size)
         return p;
-    if (!next_alloc && new_size <= old_size + next_size)
+    if (!prev_alloc && new_size <= (c_size = old_size + prev_size))
     {
-        size_t c_size = old_size + next_size;
-
+        char *pre = PREV_BLKP(p);
+        _remove_free_block(pre);
+        memmove(pre, p, old_size);
+        PUT(HDRP(pre), PACK(c_size, 1));
+        PUT(FTRP(pre), PACK(c_size, 1));
+        return pre;
+    }
+    if (!next_alloc && new_size <= (c_size = old_size + next_size))
+    {
         _remove_free_block(NEXT_BLKP(p));
-        if (c_size - new_size >= 4 * WSIZE)
-        {
 
-            PUT(HDRP(p), PACK(new_size, 1));
-            PUT(FTRP(p), PACK(new_size, 1));
-
-            PUT(HDRP(NEXT_BLKP(p)), PACK((c_size - new_size), 0));
-            PUT(FTRP(NEXT_BLKP(p)), PACK((c_size - new_size), 0));
-
-            _add_free_block(NEXT_BLKP(p));
-            return p;
-        }
         PUT(HDRP(p), PACK(c_size, 1));
         PUT(FTRP(p), PACK(c_size, 1));
         return p;
     }
-    // if (!prev_alloc && size + 2 * WSIZE <= old_size + prev_size)
-    // {
-    //     char *pre = PREV_BLKP(p);
-    //     _remove_free_block(pre);
-    //     memmove(pre, p, old_size);
-    //     PUT(HDRP(pre), PACK(old_size + prev_size, 1));
-    //     PUT(FTRP(pre), PACK(old_size + prev_size, 1));
-    //     return pre;
-    // }
 
     void *newptr = mm_malloc(size);
     if (newptr == NULL)

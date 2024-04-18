@@ -2,11 +2,12 @@
 // #include "memlib.h"
 #include <stdio.h>
 
-#define GET_BLOCK_SIZE(class) (1 << (5 + class))
+#define GET_BLOCK_SIZE(class) (1 << (4 + class))
 
 int _get_class(size_t size)
 {
-    int class = -4;
+    size -= 1;
+    int class = -3;
     while (size > 0 && class < 12)
     {
         class += 1;
@@ -16,7 +17,7 @@ int _get_class(size_t size)
 }
 int main(void)
 {
-    int class = _get_class(65);
+    int class = _get_class(53);
     printf("%d\n", class);
     printf("%d\n", GET_BLOCK_SIZE(class));
 

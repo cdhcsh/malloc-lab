@@ -290,16 +290,6 @@ void *mm_realloc(void *p, size_t size)
 
     if (new_size <= old_size)
         return p;
-    if (!prev_alloc && !next_alloc && new_size <= (c_size = old_size + next_size + prev_size))
-    {
-        char *pre = PREV_BLKP(p);
-        _remove_free_block(pre);
-        _remove_free_block(NEXT_BLKP(p));
-        memmove(pre, p, old_size);
-        PUT(HDRP(pre), PACK(c_size, 1));
-        PUT(FTRP(pre), PACK(c_size, 1));
-        return pre;
-    }
     if (!prev_alloc && new_size <= (c_size = old_size + prev_size))
     {
         char *pre = PREV_BLKP(p);
